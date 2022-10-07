@@ -1,0 +1,86 @@
+module Authorization where
+
+import Daml.Script
+
+template Coin
+    with
+        issuer : Party
+        owner : Party
+        amount : Decimal
+        delegates : [Party]
+    where
+        signatory issuer , owner
+        observer delegates
+    
+        choice Transfer : ContractId TransferProposal
+            with  newOwner : Party
+            controller owner 
+                do
+                    create TransferProposal with coin = this; newOwner
+
+template TransferProposal with
+        coin : Coin
+        newOwner : Party
+    where
+        signatory  (signatory coin)
+        observer newOwner
+    
+        
+        choice AcceptTransfer : ContractId Coin
+           with
+                token : ContractId CoinOnwerAuthorization
+            controller newOwner
+                do
+                    t <- fetch token
+                    assert (coin.issuer == t.issuer)
+                    assert (newOwner == t.owner)
+                    archive token
+                    create coin with owner = newOwner
+
+
+template CoinOnwerAuthorization
+    with
+        issuer : Party
+        owner : Party
+    where
+        signatory issuer
+        observer owner
+
+        choice WithdrawAuthorization : ()
+            controller issuer
+            do return ()
+    
+authroizationSetUp : Script ()
+authroizationSetUp  = do
+    issuer <- allocatePartyWithHint "Issuer" (PartyIdHint "Issuer")
+    issuerId <- validateUserId "issuer"
+    createUser (User issuerId (Some issuer)) [CanActAs issuer]
+
+    owner <- allocatePartyWithHint "Owner" (PartyIdHint "Owner")
+    ownerId <- validateUserId "owner"
+    createUser (User ownerId (Some owner)) [CanActAs owner]
+
+    bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+    bobId <- validateUserId "bob"
+    createUser (User bobId (Some bob)) [CanActAs bob]
+
+    -- CREATE COIN
+    coin <- submitMulti [issuer, owner] [] $ createCmd
+        Coin with amount = 99.99; delegates = []; ..
+    
+    -- COIN TRANSFER PROPOSAL  
+    cp <- submit owner do
+        exerciseCmd coin Transfer with newOwner = bob
+    
+    -- COIN AUTHORIZATION
+    ca <- submit issuer do
+        createCmd CoinOnwerAuthorization with owner = bob; ..
+    
+    -- TRANSFER COIN ACCEPT
+    submit bob do
+        exerciseCmd cp AcceptTransfer with token = ca
+
+
+
+
+    pure ()

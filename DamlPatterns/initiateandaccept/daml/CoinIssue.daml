@@ -1,0 +1,83 @@
+module CoinIssue where
+
+import Daml.Script
+
+template Coin
+    with 
+        issuer : Party
+        owner : Party
+        amount : Decimal
+    where
+        signatory issuer
+
+template CoinIssueAgreement
+    with
+        issuer : Party
+        owner : Party
+    where
+        signatory issuer, owner
+
+        nonconsuming choice CoinIssueAgreement_Issue : ContractId Coin
+            with 
+                amount : Decimal
+            controller issuer
+                do
+                    create Coin with ..
+
+
+template CoinIssueProposal
+    with
+        issuer : Party
+        owner : Party
+    where
+        signatory issuer
+        observer owner
+
+        choice CoinIssueProposal_Accept : ContractId CoinIssueAgreement
+            controller owner
+                do
+                    create CoinIssueAgreement with ..
+
+
+template CoinMaster 
+    with
+        issuer : Party
+    where
+        signatory issuer
+        
+        nonconsuming choice Invite : ContractId CoinIssueProposal
+            with 
+                owner : Party
+            controller issuer
+                do
+                    create CoinIssueProposal with ..
+
+
+coinTest : Script ()
+coinTest = do
+    issuer <- allocatePartyWithHint ("Alice") (PartyIdHint "Alice")
+    issuerId <- validateUserId "alice"
+    createUser (User issuerId (Some issuer)) [CanActAs issuer]
+
+    owner <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+    ownerId <- validateUserId "bob"
+    createUser (User ownerId (Some owner)) [CanActAs owner]
+
+    debug $ issuer
+    debug $ owner
+
+    cm <- submit issuer do
+        createCmd CoinMaster with ..
+    
+    cip <- submit issuer do
+        exerciseCmd cm Invite with ..
+    
+    cag <- submit owner do
+        exerciseCmd cip CoinIssueProposal_Accept
+    
+    submit issuer do
+        exerciseCmd cag CoinIssueAgreement_Issue with amount = 100.00
+
+    pure ()
+    
+

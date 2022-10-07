@@ -1,0 +1,86 @@
+module LockingByState where
+
+import Daml.Script
+
+type LockableCoinId = ContractId LockableCoin
+
+template LockableCoin
+    with
+        issuer : Party
+        owner : Party
+        amount : Decimal
+        locker : Party
+    where
+        signatory issuer
+        signatory owner
+        observer locker
+
+        ensure amount > 0.0
+
+        choice Transfer : ContractId TransferProposal
+            with
+                newOwner : Party
+            controller owner
+                do
+                    assert (locker == owner) -- means coing is unlocked
+                    create TransferProposal with coin = this; newOwner
+
+        choice Lock : LockableCoinId
+            with
+                newLocker : Party
+            controller owner 
+                do
+                    assert (newLocker /= owner)
+                    create this with locker = newLocker
+        
+        choice UnLock : LockableCoinId
+            controller locker
+                do
+                    assert (locker /= owner)
+                    create this with locker = owner
+
+
+template TransferProposal
+    with
+        coin : LockableCoin
+        newOwner : Party
+    where
+        signatory (signatory coin)
+        observer newOwner
+
+        choice AcceptTransfer : ContractId LockableCoin
+            controller newOwner
+                do
+                    create coin with owner = newOwner
+
+lockingByState : Script ()
+lockingByState = do
+    alice <- allocateParty "Alice"
+    bob <- allocateParty "Bob"
+    charlie <- allocateParty "Charlie"
+    dave <- allocateParty "Dave"
+
+    coin <- submitMulti [alice, bob] [] $ createCmd 
+        LockableCoin with issuer = alice; owner = bob; amount = 9.99; locker = bob
+
+    coin <- submit bob do
+        exerciseCmd coin Lock with newLocker = charlie    
+    
+    -- as coin is locked
+    submitMustFail bob do
+        exerciseCmd coin Transfer with newOwner = charlie; ..
+
+    coin <- submit charlie do
+        exerciseCmd coin UnLock
+    
+    proposal <- submit bob do
+        exerciseCmd coin Transfer with newOwner = charlie; ..
+    
+    submit charlie do
+        exerciseCmd proposal AcceptTransfer
+    
+
+     
+    pure ()
+        
+        

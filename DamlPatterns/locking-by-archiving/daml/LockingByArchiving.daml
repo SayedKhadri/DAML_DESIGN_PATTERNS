@@ -1,0 +1,152 @@
+module LockingByArchiving where
+
+import Daml.Script
+import DA.Time (time)
+import DA.Date
+
+template Coin
+  with
+    issuer : Party
+    owner : Party
+    amount : Decimal
+    delegates : [Party]
+  where
+    signatory issuer, owner
+    observer delegates
+
+    choice Transfer : ContractId TransferProposal
+      with newOwner : Party
+      controller owner
+        do
+          create TransferProposal with coin = this;  ..
+
+    choice Archives : ()
+      controller issuer
+        do
+          assert (issuer == owner)
+          return ()
+  
+    choice Lock : ContractId LockedCoin
+      with
+        locker : Party; maturity : Time
+      controller owner
+        do create LockedCoin with lockedCoin = this; ..
+      
+    choice Disclose : ContractId Coin
+      with
+        delegate : Party
+      controller owner
+        do create this with delegates = delegate :: delegates
+
+
+template LockedCoin
+  with
+    lockedCoin : Coin
+    maturity : Time
+    locker  : Party
+  where
+    signatory (signatory lockedCoin)
+    observer locker
+
+    choice UnLock : ContractId Coin
+      controller locker
+        do create lockedCoin
+  
+
+template TransferProposal
+  with
+    newOwner : Party
+    coin : Coin
+  where
+    signatory (signatory coin)
+    observer newOwner
+
+    choice AcceptTransfer : ContractId Coin
+      controller newOwner
+        do
+          create coin
+
+template CoinCommitment
+  with
+    issuer : Party
+    owner : Party
+    amount : Decimal
+  where
+    signatory issuer
+    observer owner
+
+    choice LockCoin : ContractId LockedCoin
+      with
+        coinCid : ContractId Coin
+        maturity : Time
+        locker  : Party
+      controller owner
+        do
+          inputCoin <- fetch coinCid
+          assert (inputCoin.owner == owner && inputCoin.issuer == issuer && inputCoin.amount == amount)
+          --transfer coin to issuer so that it can be archvies
+          cn <- exercise coinCid Transfer with newOwner = issuer
+          do
+            id <- exercise cn AcceptTransfer
+            exercise id Archive
+
+            -- create locked coin
+            create LockedCoin with
+              lockedCoin = inputCoin with owner; issuer; amount 
+              maturity
+              locker
+              
+
+
+archivingByLocking : Script ()
+archivingByLocking = do
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  -- BEGIN LOCKING BY ACRHIVING
+  coin <- submitMulti [alice, bob] [] $ createCmd Coin with
+      issuer = alice
+      owner = bob
+      amount = 99.999
+      delegates = []
+  
+  -- Archvie fails - as issuer is not owner
+  submitMustFail alice do exerciseCmd coin Archives
+
+  coin2 <- submit alice do
+    createCmd Coin with issuer = alice; owner = alice; amount = 99.99; delegates = []
+
+  -- Archive success 
+  submit alice do exerciseCmd coin2 Archives
+  -- END LOCKING BY ACRHIVING
+
+  -- LOCK BY CONSUMING CHOICE BEGIN
+  charlie <- allocateParty "Charlie"
+  coin3 <- submitMulti [alice, charlie] [] $ createCmd Coin with owner = charlie; issuer = alice; amount = 60.66; delegates = []
+
+  coin3 <- submit charlie do
+    exerciseCmd coin3 Disclose with delegate = bob
+
+  lockerCoin <- submit charlie do 
+    exerciseCmd coin3 Lock 
+      with 
+        locker = bob
+        maturity = time (date 2007 Apr 5) 14 30 05     
+
+  unlockedCoin <- submit bob do
+    exerciseCmd lockerCoin UnLock
+  
+  -- LOCK BY CONSUMING CHOICE END
+
+  coin5 <- submitMulti [alice, bob] [] $ createCmd do Coin with owner = bob; issuer = alice; amount = 10.0; delegates = []
+
+  cct <- submit alice do 
+    createCmd CoinCommitment with issuer = alice; owner = bob; amount = 10.0
+  
+  lc <- submit bob do
+    exerciseCmd cct LockCoin with coinCid = coin5; maturity = time (date 2007 Apr 5) 14 30 05; locker = charlie
+
+  submit charlie do exerciseCmd lc UnLock
+
+  pure ()
+    

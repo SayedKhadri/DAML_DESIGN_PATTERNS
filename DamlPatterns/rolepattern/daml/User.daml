@@ -1,0 +1,124 @@
+module User where
+
+import Daml.Script
+
+template AppUser
+    with
+        username : Party
+    where
+        signatory username
+        
+        key (username) : Party
+        maintainer key
+
+        nonconsuming choice AppUser_SendRequest : ContractId FriendRequest
+            with
+                friend : Party
+            controller username
+                do
+                    create FriendRequest with requester = username; friend
+        
+               
+template FriendRequest
+    with
+        requester : Party
+        friend : Party
+    where
+        signatory requester
+        observer friend
+        key (requester, friend): (Party, Party)
+        maintainer key._1
+
+        nonconsuming choice FriendRequest_Accept : ContractId Friendship
+            controller friend
+                do
+                    archive self
+                    create Friendship with friend1 = requester; friend2 = friend
+        
+
+        choice FriendRequest_Cancel : ()
+            controller requester
+                do archive self
+
+
+template Friendship
+    with
+        friend1 : Party
+        friend2 : Party
+    where
+        signatory friend1, friend2
+        
+        key (friend1, friend2) : (Party, Party)
+        maintainer key._1, key._2
+
+        nonconsuming choice SendMessage1 : ContractId Message
+            with
+                receiver : Party
+                content : Text
+            controller friend1
+                do
+                    assertMsg "You can't send message to yourself" (receiver /= friend1)
+                    create Message with sender = friend1; ..
+        
+        nonconsuming choice SendMessage2 : ContractId Message
+            with
+                receiver : Party
+                content : Text
+            controller friend2
+                do
+                    assertMsg "You can't send message to yourself" (receiver /= friend2)
+                    create Message with sender = friend2; ..
+        
+        choice Cancel1 : ()
+            controller friend1
+                do
+                    return ()
+                   
+
+        choice Cancel2 : ()
+            controller friend2
+                do
+                    return ()
+                    
+
+template Message
+    with
+        sender : Party
+        receiver : Party
+        content : Text
+    where
+        signatory sender, receiver
+
+test = do
+    [alice, bob] <- mapA allocateParty ["Alice", "Bob"]
+
+    submit alice $ createCmd $ AppUser with username = alice
+    submit bob $ createCmd $ AppUser with username = bob
+
+    submit alice do 
+        exerciseByKeyCmd @AppUser alice AppUser_SendRequest 
+            with friend = bob
+    
+    submit bob do 
+        exerciseByKeyCmd @FriendRequest (alice, bob) FriendRequest_Accept
+
+    submit alice do
+        exerciseByKeyCmd @Friendship (alice, bob) SendMessage1 with 
+            receiver = bob; content = "Hello from alice!"
+    submit bob do 
+        exerciseByKeyCmd @Friendship (alice, bob) SendMessage2 with 
+            receiver = alice; content = "Hello from bob!"
+
+    -- ALICE can't send messsage to herself
+    submitMustFail alice do exerciseByKeyCmd @Friendship (alice, bob) SendMessage1 with receiver = alice; content = "Hello from alice to alice!"
+
+    submit alice do
+        exerciseByKeyCmd @Friendship (alice, bob) Cancel1
+
+    -- Friendshipt is already cancelled by alice, so bob can't cancel it
+    submitMustFail bob do
+        exerciseByKeyCmd @Friendship (alice, bob) Cancel1
+    
+    pure()
+       
+        

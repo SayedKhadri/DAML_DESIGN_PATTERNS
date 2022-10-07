@@ -1,0 +1,60 @@
+module MutualTransfer where
+
+import Daml.Script
+
+template IoU
+    with
+        issuer : Party
+        owner : Party
+        amount : Decimal
+    where
+        signatory issuer
+        observer owner
+    
+        choice Mutual_Transfer : ContractId IoU
+            with
+                newOwner : Party
+            controller owner, newOwner
+                do
+                    create this with owner = newOwner
+
+template IoUSender
+    with
+        sender : Party
+        receiver : Party
+    where
+        signatory receiver
+        observer sender
+
+        nonconsuming choice SendIoU : ContractId IoU
+            with
+                iouCid : ContractId IoU
+            controller sender
+                do
+                    iou <- fetch iouCid
+                    assert (iou.amount > 0.0)
+                    assert (sender == iou.owner)
+                    exercise iouCid Mutual_Transfer with newOwner = receiver
+
+mt = do
+    alice <- allocateParty "Alice"
+    bob <- allocateParty "Bob"
+    charlie <- allocateParty "Chalie"
+
+    iou <- submit alice do
+        createCmd IoU with issuer = alice; owner = alice; amount = 999.00
+    
+    bis <- submit bob do
+        createCmd IoUSender with sender = alice, receiver = bob
+    cis <- submit charlie do
+        createCmd IoUSender with sender = bob, receiver = charlie
+
+    iou <- submit alice do
+        exerciseCmd bis SendIoU with iouCid = iou
+    
+    submit bob do
+        exerciseCmd cis SendIoU with iouCid = iou
+
+
+
+    pure ()

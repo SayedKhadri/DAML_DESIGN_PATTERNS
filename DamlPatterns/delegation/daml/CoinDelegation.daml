@@ -1,0 +1,106 @@
+module CoinDelegation where
+
+import Daml.Script
+
+
+template Coin
+    with
+        owner : Party
+        issuer : Party
+        amount : Decimal
+        delegates  :[Party]
+    where
+        signatory issuer, owner
+        observer delegates
+
+        choice Transfer  : ContractId TransferProposal
+            with newOwner : Party
+            controller owner
+                do
+                    create TransferProposal with coin = this; ..
+        
+        choice Disclose : ContractId Coin
+            with p : Party
+            controller owner
+                do create this with delegates = p :: delegates
+
+
+template TransferProposal
+    with
+        coin : Coin
+        newOwner : Party
+    where
+        signatory (signatory coin)
+        observer newOwner
+
+        choice Accept : ContractId Coin
+            controller newOwner
+                do
+                    create coin with owner = newOwner
+
+
+template CoinPoA
+    with
+        attorney : Party
+        coinOwner : Party
+    where
+        signatory coinOwner
+        observer attorney
+    
+        choice WithdrawPoA : ()
+            controller coinOwner
+                do return ()
+        
+        nonconsuming choice TransferCoin : ContractId TransferProposal
+            with
+                coinId : ContractId Coin
+                newOwner : Party
+            controller attorney
+                do
+                    exercise coinId Transfer with newOwner    
+
+setup : Script ()
+setup = do
+
+    issuer <- allocatePartyWithHint ("Alice") (PartyIdHint "Alice")
+    issuerId <- validateUserId "alice"
+    createUser (User issuerId (Some issuer)) [CanActAs issuer]
+
+    owner <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+    ownerId <- validateUserId "bob"
+    createUser (User ownerId (Some owner)) [CanActAs owner]
+
+    attorney <- allocatePartyWithHint "Attorney" (PartyIdHint "Attorney")
+
+    charlie <- allocatePartyWithHint "Charlie" (PartyIdHint "Charlie")
+   
+
+    debug $ issuer
+    debug $ owner
+
+
+    -- create coing contract with issuer and owner
+    cn <- submitMulti [issuer, owner] [] $ createCmd
+        Coin with
+            issuer
+            owner
+            amount = 100.99
+            delegates = []
+    
+    -- disclose coin contract to attorney
+    cna <- submit owner do
+        exerciseCmd cn Disclose with p = attorney
+
+    -- create PoA with attorney as controller  
+    cpoa <- submit owner do
+        createCmd CoinPoA with coinOwner = owner; ..
+    
+    -- attorney execises his choice for transfer coin with new owner charlie
+    cpc <- submit attorney do
+        exerciseCmd cpoa TransferCoin with newOwner = charlie; coinId = cna
+
+    submit charlie do
+        exerciseCmd cpc Accept
+        
+    pure ()
+          

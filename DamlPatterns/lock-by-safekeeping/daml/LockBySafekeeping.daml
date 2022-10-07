@@ -1,0 +1,137 @@
+module LockBySafekeeping where
+
+import Daml.Script
+import DA.Time (time)
+import DA.Date (date)
+import DA.Date.Types (Month(Oct))
+import DA.Time.Types (RelTime(RelTime))
+
+data LockResult = LockResult with
+    coinCid : ContractId Coin
+    lockCid : ContractId LockedCoin
+        deriving (Eq, Show)
+
+template Coin
+    with
+        owner : Party
+        issuer : Party
+        amount : Decimal
+        delegates : [Party]
+    where
+        signatory owner, issuer
+        observer delegates
+
+        choice Transfer : ContractId CoinTransferProposal
+            with 
+                newOwner : Party
+            controller owner
+                do
+                    create CoinTransferProposal with coin = this; ..
+
+
+template CoinTransferProposal 
+    with
+        newOwner : Party
+        coin : Coin
+    where
+        signatory (signatory coin)
+        observer newOwner
+        ensure coin.amount > 0.0
+
+        choice CoinTransferProposal_Accept : ContractId Coin
+            controller newOwner
+                do
+                    create coin with owner = newOwner
+
+template CoinLockRequest
+    with
+        locker : Party
+        coin : Coin
+        maturity : Time
+    where
+        signatory locker
+        observer coin.owner
+    
+        choice CoinLockRequest_Accept : LockResult
+            with
+                coinCid : ContractId Coin
+            controller coin.owner
+                do
+                    ic <- fetch coinCid
+                    assert (ic == coin)
+                    tpCid <- exercise coinCid Transfer with newOwner = locker
+                    coinCid <- exercise tpCid CoinTransferProposal_Accept
+                    lockCid <- create LockedCoin with ..
+                    return LockResult {coinCid, lockCid}
+
+
+template LockedCoin
+    with
+        locker : Party
+        coin : Coin
+        maturity : Time
+    where
+        signatory locker, coin.owner
+
+        choice LockedCoin_Unlock : ContractId Coin
+            with
+                coinCid : ContractId Coin
+            controller locker
+                do
+                    ic <- fetch coinCid
+                    assert (locker == ic.owner)
+                    tpCid <- exercise coinCid Transfer with newOwner = coin.owner
+                    exercise tpCid CoinTransferProposal_Accept
+        
+        choice LockedCoin_Clawback : ContractId Coin
+            with
+                coinCid : ContractId Coin
+            controller coin.owner
+                do
+                    time <- getTime
+                    if (time < maturity)
+                       then assertFail ("Coin is not MATURED yet, wait till : " <> show  maturity)
+                       else do
+                        ic <- fetch coinCid
+                        assert (ic == coin with owner = locker)
+                        tpCid <- exercise coinCid Transfer with newOwner = coin.owner
+                        exercise tpCid CoinTransferProposal_Accept
+                            
+
+bySafekeeping : Script ()
+bySafekeeping = do
+    owner <- allocateParty "Alice"
+    locker <- allocateParty "Bob"
+    issuer <- allocateParty "HSBC"
+
+    let
+        amount : Decimal = 99.99
+        delegates = []
+        maturity = time (date 2022 Oct 03) 15 10 10
+        coin = Coin with ..
+
+    coinCid <- submitMulti [issuer, owner] [] $ createCmd
+        coin
+    
+    lockRequest <- locker `submit` do
+        createCmd CoinLockRequest with ..
+    
+    lockResult <- owner `submit` do
+        exerciseCmd lockRequest CoinLockRequest_Accept with ..
+    
+    -- not matured yet
+    owner `submitMustFail` do
+        exerciseCmd lockResult.lockCid LockedCoin_Clawback with coinCid = lockResult.coinCid
+    
+    locker `submit` do 
+        exerciseCmd lockResult.lockCid LockedCoin_Unlock with coinCid = lockResult.coinCid
+    
+    
+    
+    debug (lockResult)
+
+    pure ()
+                    
+
+
+

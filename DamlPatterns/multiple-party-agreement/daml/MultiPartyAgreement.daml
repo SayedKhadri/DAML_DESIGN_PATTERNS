@@ -1,0 +1,99 @@
+module MultiPartyAgreement where
+
+import Daml.Script
+import DA.List (sort, unique)
+
+
+template Agreement
+    with
+        signatories : [Party]
+    where
+        signatory signatories
+        ensure 
+            unique signatories
+
+template Pending
+    with
+        finalContract : Agreement
+        alreadySigned : [Party] 
+    where
+        signatory alreadySigned
+        observer finalContract.signatories
+        ensure
+            unique alreadySigned
+
+        -- The parties who need to sign is the finalContract.signatories with alreadySigned filtered out
+        let toSign = filter (`notElem` alreadySigned) finalContract.signatories
+
+        choice SingAgreement : ContractId Pending
+            with
+                signer : Party
+            controller signer
+                do
+                    -- Check the controller is in the toSign list, and if they are, sign the Pending contract
+                    assert (signer `elem` toSign)
+                    create this with alreadySigned = signer :: alreadySigned
+        
+        choice Finalize : ContractId Agreement
+            with
+                signer : Party
+            controller signer
+                do
+                    assertMsg "Not signed by all signatories!" (sort alreadySigned == sort finalContract.signatories)
+                    create finalContract
+
+makeParties : Script (Party, Party, Party, Party)
+makeParties = do
+    person1 <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
+    person1Id <- validateUserId "person1"
+    createUser (User person1Id (Some person1)) [CanActAs person1]
+
+    person2 <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
+    person2Id <- validateUserId "person2"
+    createUser (User person2Id (Some person2)) [CanActAs person2]
+
+    person3 <- allocatePartyWithHint "Dave" (PartyIdHint "Dave")
+    person3Id <- validateUserId "person3"
+    createUser (User person3Id (Some person3)) [CanActAs person3]
+
+    person4 <- allocatePartyWithHint "Charlie" (PartyIdHint "Charlie")
+    person4Id <- validateUserId "person4"
+    createUser (User person4Id (Some person4)) [CanActAs person4]
+
+    return (person1, person2, person3, person4)
+
+setUpAgreement : Script ()
+setUpAgreement = do
+    setUpResults@(person1, person2, person3, person4) <- makeParties
+    let signatories = [person1, person2, person3, person4]
+
+    let finalContract = Agreement with signatories
+    
+    debug $ (signatories)
+
+    -- must fail as person cannot sign for others
+    submitMustFail person1 do
+        createCmd Pending with finalContract; alreadySigned = [person1, person2]
+
+    
+    --person1 signs agreement
+    pending <- submit person1 do
+        createCmd Pending with finalContract; alreadySigned = [person1]
+    
+    pending <- submit person2 do
+        exerciseCmd pending SingAgreement with signer = person2
+
+    pending <- submit person3 do
+        exerciseCmd pending SingAgreement with signer = person3
+
+    pending <- submit person4 do
+        exerciseCmd pending SingAgreement with signer = person4
+    
+    -- you cann't sign same agreement twice
+    submitMustFail person4 do
+        exerciseCmd pending SingAgreement with signer = person4
+
+    submit person1 do
+        exerciseCmd pending Finalize with signer = person1
+
+    pure()

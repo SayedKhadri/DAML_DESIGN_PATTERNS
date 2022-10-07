@@ -1,0 +1,79 @@
+module MultiParty where
+
+import Daml.Script
+import DA.List (sort)
+
+template Deal 
+    with
+        signatories : [Party]
+        terms : Text
+    where
+        signatory signatories
+
+
+template DealPropsal
+    with
+        deal : Deal
+        signed : [Party]
+        terms : Text
+    where
+        signatory signed
+        observer deal.signatories
+
+
+        choice Sign : ContractId DealPropsal
+            with
+                signer : Party
+            controller signer
+                do
+                    assertMsg "Already Signed!" (notElem signer signed)
+                    assertMsg "Not a signatory to deal" (elem signer deal.signatories)
+                    create this with signed = signer :: signed
+        
+        choice SealDeal : ContractId Deal
+            with
+                signer : Party
+            controller signer
+                do
+                    assertMsg "Cann't Seal the Deal, need sign from all signatories!" (sort signed == sort deal.signatories)
+                    create Deal with signatories = signed; ..
+
+
+multiParty : Script ()
+multiParty = do
+    party0 <- allocateParty "party0"
+    party1 <- allocateParty "party1"
+    party2 <- allocateParty "party2"
+    party3 <- allocateParty "party3"
+    party4 <- allocateParty "party4"
+    alice <- allocateParty "Alice"
+    
+    let 
+        terms = "Deal terms and conditions..."
+        deal = Deal with signatories = [party0, party1, party2, party3, party4]; ..
+    
+    dp <- submit party0 do
+        createCmd DealPropsal with signed = [party0]; ..
+
+    dp <- submit party1 do
+        exerciseCmd dp Sign with signer = party1
+    
+    -- Deal can't be sealed unless all signatories sign
+    submitMustFail party2 do
+        exerciseCmd dp SealDeal with signer = party2
+    
+    dp <- submit party2 do
+        exerciseCmd dp Sign with signer = party2
+
+    dp <- submit party3 do
+        exerciseCmd dp Sign with signer = party3
+
+    dp <- submit party4 do
+        exerciseCmd dp Sign with signer = party4
+    
+    -- seal the deal as we have got signs from all signatories
+    submit party2 do
+        exerciseCmd dp SealDeal with signer = party2
+
+
+    pure ()

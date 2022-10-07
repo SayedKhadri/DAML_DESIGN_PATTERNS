@@ -1,0 +1,81 @@
+module InviteAndAccept where
+
+import Daml.Script
+import DA.Time (time)
+import DA.Date (date)
+import DA.Date.Types (Month(Apr))
+
+type RentalAgreementProposalId = ContractId RentalAgreementProposal
+
+template RentalAgreement
+    with
+        landlord : Party
+        tenant  : Party
+        amount : Decimal
+        startDate : Time
+        endDate : Time
+    where
+        signatory tenant, landlord
+        agreement " tenant will amount evey mont " <>
+                  " landlord will provide all facilities"
+
+
+template RentalAgreementProposal
+    with
+        landlord : Party
+        tenant : Party
+        amount : Decimal
+        startDate : Time
+        endDate : Time
+        note : Text
+    where
+        signatory landlord
+        observer tenant
+
+        choice RentalAgreementProposal_Accept : ContractId RentalAgreement
+            controller tenant
+                do create RentalAgreement with ..
+        
+        choice RentalAgreementProposal_Reject : RentalAgreementProposalId
+            with
+                rejectNote : Text
+            controller tenant
+                do
+                    create this with note = rejectNote
+        
+        choice RentalAgreementProposal_Revise : RentalAgreementProposalId
+            with
+                revisedAmount : Decimal
+            controller landlord 
+                do
+                    create this with amount = revisedAmount
+
+inviteAndAccept : Script ()
+inviteAndAccept = do
+    landlord <- allocatePartyWithHint "alice" (PartyIdHint "alice")
+    landlordId <- validateUserId "landlord"
+    createUser (User landlordId (Some landlord)) [CanActAs landlord]
+
+    tenant <- allocatePartyWithHint "bob" (PartyIdHint "bob")
+    tenantId <- validateUserId "tenant"
+    createUser (User tenantId (Some tenant)) [CanActAs tenant]
+
+    let 
+        amount : Decimal = 599.99
+        startDate = time (date 2022 Apr 5) 14 30 05
+        endDate = time (date 2023 Apr 6) 14 30 05
+        note = "New Rental Agreement Proposal!"
+
+    rentalProposal <- landlord `submit` do
+        createCmd RentalAgreementProposal with ..
+    
+    rentalProposal <- tenant `submit` do
+        exerciseCmd rentalProposal RentalAgreementProposal_Reject with rejectNote = "Can you reduce monthly rent to : $499.99?"
+    
+    rentalProposal <- landlord `submit` do
+        exerciseCmd rentalProposal RentalAgreementProposal_Revise with revisedAmount = 499.99
+    
+    tenant `submit` do
+        exerciseCmd rentalProposal RentalAgreementProposal_Accept
+
+    pure ()
